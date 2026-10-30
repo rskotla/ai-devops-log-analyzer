@@ -79,8 +79,11 @@ pipeline {
 
         stage('Generate HTML Reports') {
             steps {
+                echo 'Generating individual HTML reports.'
+
                 sh '''
                     .venv/bin/python html_report_generator.py
+                    cp report.css reports/html/report.css
                 '''
             }
         }
@@ -91,6 +94,7 @@ pipeline {
 
                 sh '''
                     .venv/bin/python dashboard_generator.py
+                    cp dashboard.css reports/html/dashboard.css
                 '''
             }
         }
@@ -98,7 +102,7 @@ pipeline {
 
     post {
         always {
-            archiveArtifacts artifacts: 'reports/**/*.json,reports/html/*.html',
+            archiveArtifacts artifacts: 'reports/**/*.json,reports/html/*.html,reports/html/*.css',
                              allowEmptyArchive: true
         }
 
