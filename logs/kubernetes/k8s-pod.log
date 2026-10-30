@@ -1,0 +1,7 @@
+2026-10-30T10:20:01Z INFO Starting application container
+2026-10-30T10:20:03Z ERROR Failed to connect to database service
+2026-10-30T10:20:03Z ERROR Connection timed out
+2026-10-30T10:20:04Z ERROR Application terminated unexpectedly
+Warning BackOff Back-off restarting failed container
+Pod Status: CrashLoopBackOff
+Restart Count: 5

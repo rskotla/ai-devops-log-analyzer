@@ -1,0 +1,12 @@
+Started by user admin
+[Pipeline] Start of Pipeline
+[Pipeline] stage (Build)
+[Pipeline] sh
++ docker build -t flask-app:latest .
+Step 4/8 : RUN pip install -r requirements.txt
+ERROR: Could not find a version that satisfies the requirement flask==99.99.99
+ERROR: No matching distribution found for flask==99.99.99
+[Pipeline] }
+[Pipeline] // stage
+ERROR: script returned exit code 1
+Finished: FAILURE

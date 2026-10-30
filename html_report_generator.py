@@ -1,0 +1,249 @@
+
+import json
+import html
+
+from pathlib import Path
+from datetime import datetime
+
+REPORT_DIR = Path("reports")
+HTML_DIR = REPORT_DIR / "html"
+
+
+def safe_text(value):
+    """Escape content before displaying it in HTML."""
+    return html.escape(str(value))
+
+
+def generate_html_report(report):
+
+    analysis = report["analysis"]
+    validation = analysis.get("severity_validation", {})
+
+    source = safe_text(report["log_source"])
+    log_file = safe_text(report["log_file"])
+    generated_at = safe_text(report["generated_at"])
+    model = safe_text(report["model"])
+
+    summary = safe_text(analysis.get("problem_summary", "N/A"))
+    severity = safe_text(analysis.get("severity", "N/A"))
+    root_cause = safe_text(analysis.get("root_cause", "N/A"))
+
+    validation_status = safe_text(
+        validation.get("validation_status", "NOT AVAILABLE")
+    )
+
+    evidence = analysis.get("evidence", [])
+    troubleshooting = analysis.get("troubleshooting_steps", [])
+    preventive_actions = analysis.get("preventive_actions", [])
+    validation_issues = validation.get("issues", [])
+
+    def create_list(items):
+        if not isinstance(items, list) or not items:
+            return "<li>No information available</li>"
+
+        return "".join(
+            f"<li>{safe_text(item)}</li>"
+            for item in items
+        )
+
+    severity_color = {
+        "LOW": "#198754",
+        "MEDIUM": "#b58105",
+        "HIGH": "#dc6500",
+        "CRITICAL": "#dc3545"
+    }.get(severity.upper(), "#6c757d")
+
+    validation_color = (
+        "#198754"
+        if validation_status == "CHECK_PASSED"
+        else "#dc3545"
+        if validation_status == "REVIEW_REQUIRED"
+        else "#6c757d"
+    )
+
+    return f"""
+    <!DOCTYPE html>
+    <html lang="en">
+
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+        <title>{source} - AI DevOps Report</title>
+
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f4f6f9;
+                margin: 0;
+                padding: 30px;
+                color: #263238;
+            }}
+
+            .container {{
+                max-width: 950px;
+                margin: auto;
+            }}
+
+            .header {{
+                background: #172554;
+                color: white;
+                padding: 25px;
+                border-radius: 10px;
+            }}
+
+            .card {{
+                background: white;
+                padding: 22px;
+                margin-top: 20px;
+                border-radius: 10px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+            }}
+
+            h1, h2 {{
+                margin-top: 0;
+            }}
+
+            .badge {{
+                display: inline-block;
+                color: white;
+                padding: 7px 13px;
+                border-radius: 5px;
+                font-weight: bold;
+            }}
+
+            li {{
+                margin-bottom: 10px;
+                line-height: 1.5;
+            }}
+
+            .metadata {{
+                color: #dbeafe;
+                line-height: 1.8;
+            }}
+
+            .footer {{
+                text-align: center;
+                margin-top: 25px;
+                color: #64748b;
+                font-size: 13px;
+            }}
+        </style>
+    </head>
+
+    <body>
+
+    <div class="container">
+
+        <div class="header">
+            <h1>AI DevOps Log Analysis Report</h1>
+            <div class="metadata">
+                <strong>Source:</strong> {source}<br>
+                <strong>Log File:</strong> {log_file}<br>
+                <strong>Generated:</strong> {generated_at}<br>
+                <strong>AI Model:</strong> {model}
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Problem Summary</h2>
+            <p>{summary}</p>
+
+            <h2>AI Severity</h2>
+            <span class="badge" style="background:{severity_color}">
+                {severity}
+            </span>
+        </div>
+
+        <div class="card">
+            <h2>Root Cause</h2>
+            <p>{root_cause}</p>
+        </div>
+
+        <div class="card">
+            <h2>Evidence from Logs</h2>
+            <ul>{create_list(evidence)}</ul>
+        </div>
+
+        <div class="card">
+            <h2>Severity Validation</h2>
+            <span class="badge" style="background:{validation_color}">
+                {validation_status}
+            </span>
+            <ul>{create_list(validation_issues)}</ul>
+        </div>
+
+        <div class="card">
+            <h2>Troubleshooting Steps</h2>
+            <ol>{create_list(troubleshooting)}</ol>
+        </div>
+
+        <div class="card">
+            <h2>Preventive Actions</h2>
+            <ul>{create_list(preventive_actions)}</ul>
+        </div>
+
+        <div class="footer">
+            Generated by AI DevOps Log Analyzer
+        </div>
+
+    </div>
+
+    </body>
+    </html>
+    """
+
+
+def main():
+
+    HTML_DIR.mkdir(parents=True, exist_ok=True)
+
+    report_files = list(REPORT_DIR.glob("*-report.json"))
+
+    if not report_files:
+        print("No JSON reports found.")
+        return
+
+    for report_file in report_files:
+
+        try:
+            with open(report_file, "r", encoding="utf-8") as file:
+                report = json.load(file)
+
+            required_fields = [
+                "log_source",
+                "log_file",
+                "generated_at",
+                "model",
+                "analysis"
+            ]
+
+            if not isinstance(report, dict):
+                print(f"Invalid report structure: {report_file}")
+                continue
+
+            if not all(field in report for field in required_fields):
+                print(f"Missing required fields: {report_file}")
+                continue
+
+            if not isinstance(report["analysis"], dict):
+                print(f"Invalid analysis structure: {report_file}")
+                continue
+
+            html_content = generate_html_report(report)
+
+            output_file = HTML_DIR / (
+                f"{report_file.stem}.html"
+            )
+
+            with open(output_file, "w", encoding="utf-8") as file:
+                file.write(html_content)
+
+            print(f"HTML report generated: {output_file}")
+
+        except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
+            print(f"Report generation failed for {report_file}: {error}")
+
+
+if __name__ == "__main__":
+    main()

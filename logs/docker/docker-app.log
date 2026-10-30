@@ -1,0 +1,5 @@
+2026-10-30 10:15:01 INFO Starting Flask application
+2026-10-30 10:15:02 INFO Connecting to PostgreSQL database
+2026-10-30 10:15:05 ERROR Connection refused: PostgreSQL database unavailable
+2026-10-30 10:15:05 ERROR Application startup failed
+2026-10-30 10:15:05 INFO Container exiting with status code 1
