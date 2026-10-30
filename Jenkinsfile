@@ -2,6 +2,14 @@
 pipeline {
     agent any
 
+    parameters {
+        booleanParam(
+            name: 'RUN_AI_ANALYSIS',
+            defaultValue: false,
+            description: 'Enable actual AI log analysis using Ollama'
+        )
+    }
+
     options {
         timestamps()
         disableConcurrentBuilds()
@@ -43,6 +51,28 @@ pipeline {
             steps {
                 sh '''
                     .venv/bin/python ci_generate_sample_reports.py
+                '''
+            }
+        }
+
+        stage('AI Log Analysis') {
+
+            when {
+                expression {
+                    return params.RUN_AI_ANALYSIS
+                }
+            }
+
+            options {
+                timeout(time: 20, unit: 'MINUTES')
+            }
+
+            steps {
+                echo 'Starting actual AI log analysis using Ollama.'
+
+                sh '''
+                    OLLAMA_HOST=http://192.168.1.10:11434 \
+                    .venv/bin/python ai_analyzer.py --source all
                 '''
             }
         }
