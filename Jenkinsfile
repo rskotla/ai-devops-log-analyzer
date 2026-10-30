@@ -84,6 +84,16 @@ pipeline {
                 '''
             }
         }
+
+        stage('Generate Central Dashboard') {
+            steps {
+                echo 'Generating AI DevOps Central Dashboard.'
+
+                sh '''
+                    .venv/bin/python dashboard_generator.py
+                '''
+            }
+        }
     }
 
     post {
