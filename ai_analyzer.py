@@ -1,6 +1,7 @@
 
 import json
 import argparse
+import sys
 
 from pathlib import Path
 from datetime import datetime
@@ -90,23 +91,19 @@ Logs:
 
     try:
         analyzer = AzureAIAnalyzer()
-
         ai_response = analyzer.analyze(prompt)
-
         return json.loads(ai_response)
 
-    except json.JSONDecodeError:
-        return {
-            "analysis_error": "Azure AI did not return valid JSON",
-            "raw_response": ai_response
-        }
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            f"Azure AI returned invalid JSON for {source}"
+        ) from error
 
     except Exception as error:
-        print(
-            f"Azure AI analysis error: "
+        raise RuntimeError(
+            f"Azure AI analysis failed for {source}: "
             f"{type(error).__name__}: {error}"
-        )
-        return None
+        ) from error
 
     finally:
         if analyzer:
@@ -139,7 +136,7 @@ def save_report(source, log_path, analysis):
         print(f"\nJSON report saved: {report_file}")
 
     except OSError as error:
-        print(f"Unable to save report: {error}")
+        raise RuntimeError(f"Unable to save report: {error}") from error
 
 
 def process_log(selected_log):
@@ -156,26 +153,25 @@ def process_log(selected_log):
     log_content = read_log_file(file_path)
 
     if not log_content:
-        print(f"No log content available for {source}.")
-        return
+        raise RuntimeError(
+            f"No log content available for {source}: {file_path}"
+        )
 
     print(f"\nSending {source} logs to Azure AI Foundry...")
     print(f"Azure AI Deployment: {DEPLOYMENT_NAME}")
 
     analysis = analyze_logs(log_content, source)
 
-    if analysis is None:
-        print(f"\nAzure AI analysis failed for {source}.")
-        return
-
     if not isinstance(analysis, dict):
-        print("\nInvalid AI response format.")
-        return
+        raise RuntimeError(
+            f"Invalid AI response format for {source}"
+        )
 
     if "analysis_error" in analysis:
-        print("\nAzure AI returned an invalid analysis response.")
-        print(analysis["analysis_error"])
-        return
+        raise RuntimeError(
+            f"Invalid AI analysis response for {source}: "
+            f"{analysis['analysis_error']}"
+        )
 
     severity_validation = validate_severity(analysis)
 
@@ -219,8 +215,17 @@ def main():
         print("\n===== AZURE AI DEVOPS LOG ANALYZER =====")
         print(f"Selected source: {args.source.upper()}")
 
-        for selected_log in selected_sources:
-            process_log(selected_log)
+        try:
+            for selected_log in selected_sources:
+                process_log(selected_log)
+
+        except Exception as error:
+            print(
+                f"\nPIPELINE ANALYSIS FAILED: "
+                f"{type(error).__name__}: {error}",
+                file=sys.stderr
+            )
+            sys.exit(1)
 
         print("\n===== AZURE AI LOG ANALYSIS COMPLETED =====")
 
