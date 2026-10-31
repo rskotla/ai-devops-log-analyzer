@@ -10,6 +10,7 @@ import requests
 from ai_analyzer import MODEL, OLLAMA_API
 from evidence_validator import validate_evidence
 from severity_validator import validate_severity
+from ai_output_validator import validate_ai_output
 
 
 PROJECT_DIR = Path(__file__).parent
@@ -38,6 +39,17 @@ IMPORTANT_DIAGNOSTIC_PATTERNS = re.compile(
     r"worker failed|exited with code|"
     r"crashloopbackoff|oomkilled|"
     r"fatal|critical",
+    re.IGNORECASE
+)
+
+
+# Match successful Kubernetes kubelet probes only. This covers the API
+# health endpoint and Nginx web-root probes without suppressing ordinary
+# user traffic or HTTP 4xx/5xx responses.
+SUCCESSFUL_PROBE_PATTERN = re.compile(
+    r'(?=.*\bkube-probe\b)'
+    r'(?=.*"\s*200\b)'
+    r'(?=.*\bGET\s+/(?:api/health)?(?:\s|"))',
     re.IGNORECASE
 )
 
@@ -96,6 +108,85 @@ def extract_diagnostic_signals(log_text):
             signals.append(line)
 
     return signals
+
+
+def compact_kubernetes_logs(log_text, max_chars=MAX_LOG_CHARS):
+
+    """Summarize successful kubelet probes and retain application diagnostics."""
+
+    if not isinstance(log_text, str) or not log_text:
+        return ""
+
+    lines = log_text.splitlines()
+
+    probe_lines = [
+        line for line in lines
+        if SUCCESSFUL_PROBE_PATTERN.search(line)
+    ]
+
+    # No successful kubelet probes found: preserve the original recent log tail.
+    if not probe_lines:
+        return log_text[-max_chars:]
+
+    non_probe_lines = [
+        line for line in lines
+        if not SUCCESSFUL_PROBE_PATTERN.search(line)
+    ]
+
+    # Summarize by endpoint so API and web probe activity remain distinguishable.
+    endpoint_groups = {}
+    for line in probe_lines:
+        match = re.search(r'\bGET\s+(/(?:api/health)?)', line, re.IGNORECASE)
+        endpoint = match.group(1) if match else "unknown"
+        endpoint_groups.setdefault(endpoint, []).append(line)
+
+    summary_lines = [
+        "[SUCCESSFUL KUBERNETES PROBE SUMMARY - DERIVED FROM SOURCE LOGS]"
+    ]
+
+    for endpoint, samples in sorted(endpoint_groups.items()):
+        summary_lines.extend([
+            f"Endpoint {endpoint}: {len(samples)} successful HTTP 200 kube-probe requests",
+            f"First sample: {samples[0]}",
+            f"Last sample: {samples[-1]}"
+        ])
+
+    summary_lines.append("[END SUCCESSFUL KUBERNETES PROBE SUMMARY]")
+    summary_text = "\n".join(summary_lines)
+    non_probe_text = "\n".join(non_probe_lines).strip()
+
+    compacted_text = (
+        non_probe_text + "\n\n" + summary_text
+        if non_probe_text
+        else summary_text
+    )
+
+    if len(compacted_text) <= max_chars:
+        return compacted_text
+
+    # Preserve diagnostic evidence explicitly, then fill remaining space with
+    # the most recent non-probe log tail. Original source_data is never changed.
+    diagnostic_lines = extract_diagnostic_signals(non_probe_text)
+    diagnostic_text = "\n".join(diagnostic_lines)
+
+    fixed_text = summary_text + "\n\n[IMPORTANT DIAGNOSTIC LOG LINES]\n"
+    available_for_diagnostics = max(0, max_chars - len(fixed_text) - 80)
+    if available_for_diagnostics:
+        diagnostic_text = diagnostic_text[-available_for_diagnostics:]
+    else:
+        diagnostic_text = ""
+
+    remaining = max(0, max_chars - len(fixed_text) - len(diagnostic_text) - 40)
+    recent_text = non_probe_text[-remaining:] if remaining else ""
+
+    result = (
+        fixed_text
+        + diagnostic_text
+        + "\n\n[RECENT NON-PROBE LOG TAIL]\n"
+        + recent_text
+    )
+
+    return result[-max_chars:]
 
 
 def build_pod_status_map(data):
@@ -235,7 +326,7 @@ def prepare_kubernetes_context(data):
 
                 "success": current.get("success"),
 
-                "logs": current_logs[-MAX_LOG_CHARS:],
+                "logs": compact_kubernetes_logs(current_logs),
 
                 "error": current.get("error")
             },
@@ -244,7 +335,7 @@ def prepare_kubernetes_context(data):
 
                 "success": previous.get("success"),
 
-                "logs": previous_logs[-MAX_LOG_CHARS:],
+                "logs": compact_kubernetes_logs(previous_logs),
 
                 "error": previous.get("error")
             }
@@ -398,6 +489,96 @@ def validate_pod_status_claims(analysis, context):
     }
 
 
+
+def build_incident_correlations(context):
+
+    """Correlate related diagnostic signals within the same container log."""
+
+    correlations = []
+
+    log_records = {
+        (item.get("pod"), item.get("container")): item
+        for item in context.get("container_logs", [])
+    }
+
+    for signal_record in context.get("diagnostic_signals", []):
+
+        pod_name = signal_record.get("pod")
+        container_name = signal_record.get("container")
+        previous_signals = signal_record.get("previous", {}).get("signals", [])
+
+        if not previous_signals:
+            continue
+
+        database_indexes = [
+            index for index, line in enumerate(previous_signals)
+            if re.search(
+                r"sqlalchemy\.exc\.OperationalError|psycopg(?:\.OperationalError)?|"
+                r"connection failed|connection refused|server closed the connection",
+                line,
+                re.IGNORECASE
+            )
+        ]
+
+        worker_indexes = [
+            index for index, line in enumerate(previous_signals)
+            if re.search(
+                r"worker failed to boot|worker .* exited with code|"
+                r"worker exiting|shutting down: master",
+                line,
+                re.IGNORECASE
+            )
+        ]
+
+        # Only correlate signals from the same pod/container and previous logs.
+        if not database_indexes or not worker_indexes:
+            continue
+
+        database_index = min(database_indexes)
+        later_worker_indexes = [
+            index for index in worker_indexes if index >= database_index
+        ]
+
+        if not later_worker_indexes:
+            continue
+
+        worker_index = min(later_worker_indexes)
+        selected_indexes = sorted(set([
+            database_index,
+            *[index for index in database_indexes if index <= database_index + 2],
+            worker_index,
+            *[index for index in worker_indexes if index <= worker_index + 2]
+        ]))
+
+        evidence = [
+            previous_signals[index]
+            for index in selected_indexes
+            if index < len(previous_signals)
+        ]
+
+        log_record = log_records.get((pod_name, container_name), {})
+        pod_status = log_record.get("pod_status", {})
+
+        correlations.append({
+            "incident_type": "DATABASE_CONNECTION_FAILURE_WITH_APPLICATION_WORKER_FAILURE",
+            "time_scope": "HISTORICAL_PREVIOUS_CONTAINER_LOGS",
+            "pod": pod_name,
+            "container": container_name,
+            "current_pod_phase": pod_status.get("pod_phase"),
+            "container_ready": pod_status.get("ready"),
+            "restart_count": pod_status.get("restart_count"),
+            "observed_sequence": (
+                "A database connection error appears before a Gunicorn worker failure "
+                "in the same container's previous logs. This is a temporal correlation, "
+                "not proof that PostgreSQL itself crashed or that the database was the "
+                "ultimate root cause."
+            ),
+            "evidence": evidence
+        })
+
+    return correlations
+
+
 def analyze_kubernetes_context(context):
 
     system_prompt = """
@@ -416,7 +597,12 @@ IMPORTANT ANALYSIS RULES:
 3. Use only evidence from the supplied data.
 4. Never invent file paths, URLs, errors, events or infrastructure details.
 5. Evidence must be supported by exact excerpts or facts in the input.
-6. Prefer diagnostic_signals when identifying important errors.
+6. Prefer diagnostic_signals and incident_correlations when identifying important errors.
+6a. Health-check summaries are derived context; never use a successful probe summary as the incident problem when diagnostic failures exist. Do not present probe counts as verbatim source-log evidence.
+6b. If incident_correlations contains an item, make that correlated incident the primary focus of problem_summary and root_cause. Do not return a generic probe summary.
+6c. For a database/worker correlation, explain the sequence: database connection error in previous logs, followed by Gunicorn worker failure in the same pod/container.
+6d. State explicitly that the correlation is historical and does not prove PostgreSQL itself crashed or establish the ultimate underlying cause.
+6e. Include the exact affected pod name and distinguish its current pod phase/readiness from the historical failure.
 7. Correlate SQLAlchemy, Psycopg and database connection failures.
 8. Correlate Gunicorn worker failures with preceding application errors.
 9. Use pod_status inside each container log to identify its actual pod.
@@ -523,10 +709,13 @@ Severity must be LOW, MEDIUM, HIGH or CRITICAL.
                 "role": "user",
                 "content": (
                     "Analyze this Kubernetes incident data. "
-                    "Pay special attention to pod_status correlation "
-                    "and diagnostic_signals. Never mix logs from "
-                    "different pods. Identify historical failures "
-                    "separately from current health.\n\n"
+                    "Prioritize incident_correlations when present. "
+                    "Do not mistake successful probe summaries for an incident "
+                    "when diagnostic failures exist. Pay special attention to "
+                    "pod_status and diagnostic_signals. Never mix logs from "
+                    "different pods or containers. Identify historical failures "
+                    "separately from current health, and state uncertainty rather "
+                    "than inventing a definitive root cause.\n\n"
                     + json.dumps(context, ensure_ascii=False)
                 )
             }
@@ -552,6 +741,78 @@ Severity must be LOW, MEDIUM, HIGH or CRITICAL.
     return json.loads(ai_response)
 
 
+
+def build_source_verified_evidence(source_data, incident_correlations):
+    """
+    Return exact log lines from the original Kubernetes report.
+
+    AI-generated evidence is not trusted as a source of timestamps or log text.
+    Correlation evidence is accepted only when the complete line is found in
+    the matching pod/container's original previous-container log.
+    """
+    verified_lines = []
+    rejected_candidates = []
+
+    source_records = {
+        (entry.get("pod"), entry.get("container")): entry
+        for entry in source_data.get("container_logs", [])
+    }
+
+    for correlation in incident_correlations:
+        key = (correlation.get("pod"), correlation.get("container"))
+        source_entry = source_records.get(key)
+
+        if not source_entry:
+            rejected_candidates.extend(correlation.get("evidence", []))
+            continue
+
+        previous = source_entry.get("previous") or {}
+        original_logs = previous.get("logs", "")
+
+        if not isinstance(original_logs, str):
+            rejected_candidates.extend(correlation.get("evidence", []))
+            continue
+
+        for candidate in correlation.get("evidence", []):
+            if not isinstance(candidate, str) or not candidate.strip():
+                continue
+
+            # Correlation lines are extracted from the source logs. This
+            # membership check prevents AI-created or altered timestamps/text.
+            exact_line = candidate.strip()
+            if exact_line in original_logs.splitlines():
+                if exact_line not in verified_lines:
+                    verified_lines.append(exact_line)
+            else:
+                rejected_candidates.append(candidate)
+
+    return {
+        "verified_evidence": verified_lines,
+        "rejected_candidates": rejected_candidates,
+        "validation_status": "PASS" if verified_lines else (
+            "REVIEW_REQUIRED" if incident_correlations else "NOT_APPLICABLE"
+        ),
+    }
+
+
+def apply_source_verified_evidence(analysis, source_data, incident_correlations):
+    """
+    Replace model-generated evidence with source-verified correlation lines.
+
+    The model may explain the incident, but it cannot author timestamps or
+    evidence excerpts when deterministic incident correlations are available.
+    """
+    result = build_source_verified_evidence(
+        source_data,
+        incident_correlations
+    )
+
+    if result["validation_status"] == "PASS":
+        analysis["evidence"] = result["verified_evidence"]
+
+    return result
+
+
 def save_live_report(
     source_path,
     source_data,
@@ -559,7 +820,10 @@ def save_live_report(
     validation,
     grounding,
     pod_validation,
-    diagnostic_signals
+    diagnostic_signals,
+    incident_correlations,
+    source_evidence_validation,
+    output_validation
 ):
 
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -588,7 +852,12 @@ def save_live_report(
 
         "pod_status_validation": pod_validation,
 
-        "diagnostic_signals": diagnostic_signals
+        "diagnostic_signals": diagnostic_signals,
+
+        "incident_correlations": incident_correlations,
+
+        "source_evidence_validation": source_evidence_validation,
+        "ai_output_validation": output_validation
     }
 
     with open(OUTPUT_FILE, "w", encoding="utf-8") as file:
@@ -657,6 +926,18 @@ def main():
 
         print(f"Container log records correlated: {correlated_count}")
 
+        print("Building deterministic incident correlations...")
+
+        context["incident_correlations"] = build_incident_correlations(context)
+
+        print(
+            "Incident correlations identified: "
+            f"{len(context['incident_correlations'])}"
+        )
+
+        context_json = json.dumps(context, ensure_ascii=False)
+        print(f"Compacted AI context size: {len(context_json):,} characters")
+
         print("Sending Kubernetes data to Ollama...")
 
         analysis = analyze_kubernetes_context(context)
@@ -664,6 +945,19 @@ def main():
         if analysis is None:
 
             raise ValueError("Ollama returned no analysis")
+
+        print("Verifying incident evidence against original source logs...")
+
+        source_evidence_validation = apply_source_verified_evidence(
+            analysis,
+            source_data,
+            context.get("incident_correlations", [])
+        )
+
+        print(
+            "Source-verified incident evidence lines: "
+            f"{len(source_evidence_validation['verified_evidence'])}"
+        )
 
         print("Validating AI severity...")
 
@@ -673,12 +967,24 @@ def main():
 
         grounding = validate_evidence(analysis, source_data)
 
+        # Keep the deterministic source check visible even if the generic
+        # evidence validator returns a different result.
+        if source_evidence_validation["validation_status"] == "REVIEW_REQUIRED":
+            grounding["grounding_status"] = "REVIEW_REQUIRED"
+            grounding.setdefault("issues", []).append(
+                "Incident correlation evidence could not be matched to the "
+                "original previous-container logs."
+            )
+
         print("Validating AI pod status claims...")
 
         pod_validation = validate_pod_status_claims(
             analysis,
             context
         )
+
+        print("Validating AI output quality and recommendation safety...")
+        output_validation = validate_ai_output(analysis, context, validation)
 
         print("\n========== AI KUBERNETES ANALYSIS ==========")
 
@@ -692,6 +998,14 @@ def main():
 
         print(json.dumps(
             validation,
+            indent=4,
+            ensure_ascii=False
+        ))
+
+        print("\n========== SOURCE EVIDENCE VALIDATION ==========")
+
+        print(json.dumps(
+            source_evidence_validation,
             indent=4,
             ensure_ascii=False
         ))
@@ -712,6 +1026,10 @@ def main():
             ensure_ascii=False
         ))
 
+        print("\n========== AI OUTPUT VALIDATION ==========")
+
+        print(json.dumps(output_validation, indent=4, ensure_ascii=False))
+
         if validation["validation_status"] == "INVALID_RESPONSE":
 
             print("\nInvalid AI response. Report will not be saved.")
@@ -725,8 +1043,14 @@ def main():
             validation,
             grounding,
             pod_validation,
-            context["diagnostic_signals"]
+            context["diagnostic_signals"],
+            context.get("incident_correlations", []),
+            source_evidence_validation,
+            output_validation
         )
+
+        if output_validation["validation_status"] == "REVIEW_REQUIRED":
+            print("\nWARNING: AI output quality or recommendations require human review.")
 
         if validation["validation_status"] == "REVIEW_REQUIRED":
 

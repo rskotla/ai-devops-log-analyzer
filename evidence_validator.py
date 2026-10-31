@@ -1,5 +1,20 @@
+def _collect_source_strings(value):
+    """
+    Recursively collect original string values from a nested source report.
+    This avoids JSON escaping changing quotes and backslashes in log lines.
+    """
+    strings = []
 
-import json
+    if isinstance(value, str):
+        strings.append(value)
+    elif isinstance(value, dict):
+        for nested_value in value.values():
+            strings.extend(_collect_source_strings(nested_value))
+    elif isinstance(value, list):
+        for nested_value in value:
+            strings.extend(_collect_source_strings(nested_value))
+
+    return strings
 
 
 def validate_evidence(analysis, source_data):
@@ -8,9 +23,8 @@ def validate_evidence(analysis, source_data):
     verified_evidence = []
     unsupported_evidence = []
 
-    source_text = json.dumps(
-        source_data,
-        ensure_ascii=False
+    source_text = "\n".join(
+        _collect_source_strings(source_data)
     ).lower()
 
     evidence = analysis.get("evidence", [])
