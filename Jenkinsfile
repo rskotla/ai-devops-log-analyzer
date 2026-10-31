@@ -1,12 +1,17 @@
-
 pipeline {
     agent any
+
+    environment {
+        RES_OPTIONS = 'use-vc'
+        AZURE_AI_PROJECT_ENDPOINT = 'https://aiops-management.services.ai.azure.com/api/projects/aiops-management-hub'
+        AZURE_AI_DEPLOYMENT_NAME = 'gpt-5.4-mini'
+    }
 
     parameters {
         booleanParam(
             name: 'RUN_AI_ANALYSIS',
             defaultValue: false,
-            description: 'Enable actual AI log analysis using Ollama'
+            description: 'Enable actual AI log analysis using Azure AI Foundry'
         )
     }
 
@@ -42,7 +47,7 @@ pipeline {
         stage('Run Unit Tests') {
             steps {
                 sh '''
-                    .venv/bin/python -m unittest discover -s tests -v
+                    .venv/bin/python -m pytest -v
                 '''
             }
         }
@@ -56,7 +61,6 @@ pipeline {
         }
 
         stage('AI Log Analysis') {
-
             when {
                 expression {
                     return params.RUN_AI_ANALYSIS
@@ -68,10 +72,9 @@ pipeline {
             }
 
             steps {
-                echo 'Starting actual AI log analysis using Ollama.'
+                echo 'Starting actual AI log analysis using Azure AI Foundry.'
 
                 sh '''
-                    OLLAMA_HOST=http://192.168.1.10:11434 \
                     .venv/bin/python ai_analyzer.py --source all
                 '''
             }

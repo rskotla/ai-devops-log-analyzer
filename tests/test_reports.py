@@ -24,7 +24,7 @@ class TestReports(unittest.TestCase):
                 "log_source": source,
                 "log_file": f"logs/{source.lower()}.log",
                 "generated_at": "2026-10-30T10:00:00",
-                "model": "llama3.2:latest",
+                "model": "gpt-5.4-mini",
                 "analysis": {
                     "problem_summary": "Sample issue",
                     "severity": "HIGH",

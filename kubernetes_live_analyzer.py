@@ -5,9 +5,8 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-import requests
+from azure_ai_analyzer import AzureAIAnalyzer, DEPLOYMENT_NAME
 
-from ai_analyzer import MODEL, OLLAMA_API
 from evidence_validator import validate_evidence
 from severity_validator import validate_severity
 from ai_output_validator import validate_ai_output
@@ -694,51 +693,31 @@ Severity must be LOW, MEDIUM, HIGH or CRITICAL.
         "additionalProperties": False
     }
 
-    payload = {
-
-        "model": MODEL,
-
-        "messages": [
-
-            {
-                "role": "system",
-                "content": system_prompt
-            },
-
-            {
-                "role": "user",
-                "content": (
-                    "Analyze this Kubernetes incident data. "
-                    "Prioritize incident_correlations when present. "
-                    "Do not mistake successful probe summaries for an incident "
-                    "when diagnostic failures exist. Pay special attention to "
-                    "pod_status and diagnostic_signals. Never mix logs from "
-                    "different pods or containers. Identify historical failures "
-                    "separately from current health, and state uncertainty rather "
-                    "than inventing a definitive root cause.\n\n"
-                    + json.dumps(context, ensure_ascii=False)
-                )
-            }
-        ],
-
-        "stream": False,
-
-        "format": response_schema
-    }
-
-    response = requests.post(
-        OLLAMA_API,
-        json=payload,
-        timeout=180
+    user_prompt = (
+        "Analyze this Kubernetes incident data. "
+        "Prioritize incident_correlations when present. "
+        "Do not mistake successful probe summaries for an incident "
+        "when diagnostic failures exist. Pay special attention to "
+        "pod_status and diagnostic_signals. Never mix logs from "
+        "different pods or containers. Identify historical failures "
+        "separately from current health, and state uncertainty rather "
+        "than inventing a definitive root cause.\n\n"
+        + json.dumps(context, ensure_ascii=False)
     )
 
-    response.raise_for_status()
+    analyzer = AzureAIAnalyzer()
 
-    result = response.json()
+    try:
+        ai_response = analyzer.analyze_structured(
+            prompt=system_prompt + "\n\n" + user_prompt,
+            schema=response_schema,
+            name="kubernetes_incident_analysis"
+        )
 
-    ai_response = result["message"]["content"]
+        return json.loads(ai_response)
 
-    return json.loads(ai_response)
+    finally:
+        analyzer.close()
 
 
 
@@ -842,7 +821,7 @@ def save_live_report(
 
         "generated_at": datetime.now().astimezone().isoformat(),
 
-        "model": MODEL,
+        "model": DEPLOYMENT_NAME,
 
         "analysis": analysis,
 
@@ -938,13 +917,13 @@ def main():
         context_json = json.dumps(context, ensure_ascii=False)
         print(f"Compacted AI context size: {len(context_json):,} characters")
 
-        print("Sending Kubernetes data to Ollama...")
+        print("Sending Kubernetes data to Azure AI Foundry...")
 
         analysis = analyze_kubernetes_context(context)
 
         if analysis is None:
 
-            raise ValueError("Ollama returned no analysis")
+            raise ValueError("Azure AI returned no analysis")
 
         print("Verifying incident evidence against original source logs...")
 
@@ -1073,13 +1052,7 @@ def main():
                 "the original Kubernetes report."
             )
 
-    except (
-        OSError,
-        ValueError,
-        KeyError,
-        TypeError,
-        requests.exceptions.RequestException
-    ) as error:
+    except Exception as error:
 
         print(f"\nAnalysis failed: {error}")
 

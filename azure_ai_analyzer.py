@@ -42,6 +42,36 @@ class AzureAIAnalyzer:
 
         return response.output_text
 
+    def analyze_structured(
+        self,
+        prompt: str,
+        schema: dict,
+        name: str = "incident_analysis"
+    ) -> str:
+        if not prompt or not prompt.strip():
+            raise ValueError("Prompt cannot be empty")
+
+        if not isinstance(schema, dict):
+            raise ValueError("JSON schema must be a dictionary")
+
+        response = self.openai_client.responses.create(
+            model=DEPLOYMENT_NAME,
+            input=prompt,
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": name,
+                    "strict": True,
+                    "schema": schema,
+                }
+            },
+        )
+
+        if not response.output_text:
+            raise RuntimeError("Azure returned an empty structured response")
+
+        return response.output_text
+
     def close(self):
         try:
             self.openai_client.close()

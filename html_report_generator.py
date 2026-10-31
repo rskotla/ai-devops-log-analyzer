@@ -228,7 +228,7 @@ def generate_html_report(report):
         </div>
 
         <div class="footer">
-            AI DevOps Log Analyzer | Powered by Ollama
+            AI DevOps Log Analyzer | Powered by Azure AI Foundry
         </div>
 
     </div>

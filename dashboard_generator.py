@@ -161,7 +161,7 @@ def generate_dashboard(reports):
 
         <div class="summary-card">
             <span>AI Model</span>
-            <strong class="model-name">Llama 3.2</strong>
+            <strong class="model-name">gpt-5.4-mini</strong>
         </div>
     </section>
 
@@ -178,7 +178,7 @@ def generate_dashboard(reports):
     </section>
 
     <footer>
-        AI DevOps Log Analyzer | Powered by Ollama and Llama 3.2
+        AI DevOps Log Analyzer | Powered by Azure AI Foundry
     </footer>
 
 </div>

@@ -12,7 +12,7 @@ class TestHTMLReportGenerator(unittest.TestCase):
             "log_source": "Jenkins",
             "log_file": "logs/jenkins/jenkins-build.log",
             "generated_at": "2026-10-30T19:00:00+05:30",
-            "model": "llama3.2:latest",
+            "model": "gpt-5.4-mini",
             "analysis": {
                 "problem_summary": "Jenkins build failed",
                 "severity": "MEDIUM",
