@@ -14,7 +14,7 @@ from ai_output_validator import validate_ai_output
 
 PROJECT_DIR = Path(__file__).parent
 REPORT_DIR = PROJECT_DIR / "reports"
-OUTPUT_FILE = REPORT_DIR / "live-kubernetes-report.json"
+REPORT_PREFIX = "live-kubernetes-report"
 
 MAX_LOG_CHARS = 8000
 MAX_DIAGNOSTIC_SIGNALS = 30
@@ -189,101 +189,73 @@ def compact_kubernetes_logs(log_text, max_chars=MAX_LOG_CHARS):
 
 
 def build_pod_status_map(data):
-
     pod_status_map = {}
-
     pods = data.get("pods", {}).get("pods", [])
-
     for pod in pods:
-
-        pod_status_map[pod.get("name")] = {
-
+        namespace = pod.get("namespace") or data.get("namespace")
+        pod_status_map[(namespace, pod.get("name"))] = {
+            "namespace": namespace,
             "phase": pod.get("phase"),
-
             "node": pod.get("node"),
-
             "pod_ip": pod.get("pod_ip"),
-
             "containers": pod.get("containers", [])
         }
-
     return pod_status_map
 
-
 def prepare_kubernetes_context(data):
-
     pod_status_map = build_pod_status_map(data)
 
     context = {
-
         "project": data.get("project"),
-
         "namespace": data.get("namespace"),
-
         "collection_timestamp": data.get("collection_timestamp"),
-
         "pods": [],
-
         "container_logs": [],
-
         "diagnostic_signals": [],
-
         "events": data.get("events", {}).get("events", [])
     }
 
     pods = data.get("pods", {}).get("pods", [])
 
     for pod in pods:
-
         pod_info = {
-
+            "namespace": pod.get("namespace") or data.get("namespace"),
             "name": pod.get("name"),
-
             "phase": pod.get("phase"),
-
             "node": pod.get("node"),
-
             "pod_ip": pod.get("pod_ip"),
-
             "containers": []
         }
 
         for container in pod.get("containers", []):
-
             pod_info["containers"].append({
-
                 "name": container.get("name"),
-
                 "ready": container.get("ready"),
-
                 "restart_count": container.get("restart_count"),
-
                 "state": container.get("state"),
-
                 "last_state": container.get("last_state")
             })
 
         context["pods"].append(pod_info)
 
     for entry in data.get("container_logs", []):
-
         current = entry.get("current", {})
-
         previous = entry.get("previous", {})
 
         current_logs = str(current.get("logs", ""))
-
         previous_logs = str(previous.get("logs", ""))
 
         current_signals = extract_diagnostic_signals(current_logs)
-
         previous_signals = extract_diagnostic_signals(previous_logs)
 
         pod_name = entry.get("pod")
-
         container_name = entry.get("container")
+        entry_namespace = entry.get("namespace") or data.get("namespace")
 
-        pod_info = pod_status_map.get(pod_name, {})
+        pod_info = pod_status_map.get(
+            (entry_namespace, pod_name),
+            pod_status_map.get((None, pod_name), {})
+        )
 
         matching_container = next(
             (
@@ -295,90 +267,61 @@ def prepare_kubernetes_context(data):
         )
 
         correlated_status = {
-
+            "namespace": entry_namespace,
             "pod_phase": pod_info.get("phase"),
-
             "node": pod_info.get("node"),
-
             "pod_ip": pod_info.get("pod_ip"),
-
             "container_name": matching_container.get("name"),
-
             "ready": matching_container.get("ready"),
-
             "restart_count": matching_container.get("restart_count"),
-
             "current_state": matching_container.get("state"),
-
             "previous_state": matching_container.get("last_state")
         }
 
         context["container_logs"].append({
-
+            "namespace": entry_namespace,
             "pod": pod_name,
-
             "container": container_name,
-
             "pod_status": correlated_status,
-
             "current": {
-
                 "success": current.get("success"),
-
                 "logs": compact_kubernetes_logs(current_logs),
-
                 "error": current.get("error")
             },
-
             "previous": {
-
                 "success": previous.get("success"),
-
                 "logs": compact_kubernetes_logs(previous_logs),
-
                 "error": previous.get("error")
             }
         })
 
         context["diagnostic_signals"].append({
-
+            "namespace": entry_namespace,
             "pod": pod_name,
-
             "container": container_name,
-
             "current": {
-
                 "type": "CURRENT_CONTAINER_LOGS",
-
                 "signals": current_signals
             },
-
             "previous": {
-
                 "type": "PREVIOUS_CONTAINER_LOGS",
-
                 "signals": previous_signals
             }
         })
 
     return context
 
-
 def validate_pod_status_claims(analysis, context):
-
     issues = []
     verified_pods = []
 
-    pod_names = {
-        pod.get("name"): pod
-        for pod in context.get("pods", [])
-        if pod.get("name")
-    }
+    pods_by_name = {}
+    for pod in context.get("pods", []):
+        name = pod.get("name")
+        if name:
+            pods_by_name.setdefault(name, []).append(pod)
 
-    # Check each analysis field separately. A claim about one pod
-    # must not accidentally be applied to every pod.
     analysis_parts = []
-
     for field in (
         "problem_summary",
         "root_cause",
@@ -387,7 +330,6 @@ def validate_pod_status_claims(analysis, context):
         "preventive_actions"
     ):
         value = analysis.get(field, [])
-
         if isinstance(value, str):
             analysis_parts.append(value)
         elif isinstance(value, list):
@@ -398,8 +340,6 @@ def validate_pod_status_claims(analysis, context):
     analysis_text = "\n".join(analysis_parts).lower()
     sentences = re.split(r"(?<=[.!?])\s+|\n+", analysis_text)
 
-    # Do not treat "previous container terminated" as proof that
-    # the pod is currently stopped.
     negative_status_patterns = [
         r"\bnot\s+running\b",
         r"\bnot\s+currently\s+running\b",
@@ -412,82 +352,129 @@ def validate_pod_status_claims(analysis, context):
         r"\bcrashloopbackoff\b"
     ]
 
-    for pod_name, pod in pod_names.items():
-
-        pod_phase = pod.get("phase")
-        pod_text = pod_name.lower()
-
-        # Only evaluate sentences that mention this exact pod.
+    for pod_name, matching_pods in pods_by_name.items():
         pod_sentences = [
-            sentence
-            for sentence in sentences
-            if pod_text in sentence
+            sentence for sentence in sentences
+            if pod_name.lower() in sentence
         ]
 
         if not pod_sentences:
             continue
 
-        negative_claim_found = any(
-            re.search(pattern, sentence)
-            for sentence in pod_sentences
-            for pattern in negative_status_patterns
-        )
+        namespaces = {
+            pod.get("namespace")
+            for pod in matching_pods
+            if pod.get("namespace")
+        }
+        duplicate_name = len(namespaces) > 1
 
-        if pod_phase == "Running" and negative_claim_found:
+        if duplicate_name:
+            def mentions_namespace(sentence, namespace):
+                pattern = (
+                    r"(?<![a-z0-9.-])"
+                    + re.escape(namespace.lower())
+                    + r"(?![a-z0-9.-])"
+                )
+                return bool(re.search(pattern, sentence))
 
-            issues.append(
-                f"AI may have incorrectly described Running pod "
-                f"'{pod_name}' as stopped, down, crashed or not running. "
-                f"Source phase is Running."
-            )
-
-            continue
-
-        if pod_phase in ("Running", "Succeeded", "Failed"):
-            verified_pods.append(pod_name)
-
-        for container in pod.get("containers", []):
-
-            container_name = container.get("name", "")
-
-            if not container_name:
-                continue
-
-            matching_sentences = [
-                sentence
-                for sentence in pod_sentences
-                if container_name.lower() in sentence
+            ambiguous_sentences = [
+                sentence for sentence in pod_sentences
+                if not any(
+                    mentions_namespace(sentence, ns)
+                    for ns in namespaces
+                )
             ]
 
-            if not matching_sentences:
-                continue
-
-            container_negative_claim = any(
-                re.search(pattern, sentence)
-                for sentence in matching_sentences
-                for pattern in negative_status_patterns
-            )
-
-            if (
-                container.get("ready") is True
-                and not container_negative_claim
-            ):
-                verified_pods.append(
-                    f"{pod_name}/{container_name}"
+            if ambiguous_sentences:
+                issues.append(
+                    f"Pod name '{pod_name}' exists in multiple namespaces "
+                    f"{sorted(namespaces)}. AI claim does not identify the "
+                    f"namespace; status cannot be verified unambiguously."
                 )
 
-    return {
+            for pod in matching_pods:
+                namespace = pod.get("namespace")
+                if not namespace:
+                    continue
 
+                relevant_sentences = [
+                    sentence for sentence in pod_sentences
+                    if mentions_namespace(sentence, namespace)
+                ]
+
+                if not relevant_sentences:
+                    continue
+
+                _check_pod_claim(
+                    pod, pod_name, namespace, relevant_sentences,
+                    negative_status_patterns, issues, verified_pods, True
+                )
+        else:
+            pod = matching_pods[0]
+            _check_pod_claim(
+                pod, pod_name, pod.get("namespace"), pod_sentences,
+                negative_status_patterns, issues, verified_pods, False
+            )
+
+    return {
         "validation_status": (
             "REVIEW_REQUIRED" if issues else "CHECK_PASSED"
         ),
-
         "verified_pods": sorted(set(verified_pods)),
-
         "issues": issues
     }
 
 
+def _check_pod_claim(
+    pod, pod_name, namespace, sentences,
+    negative_patterns, issues, verified_pods, duplicate_name
+):
+    pod_phase = pod.get("phase")
+
+    negative_claim = any(
+        re.search(pattern, sentence)
+        for sentence in sentences
+        for pattern in negative_patterns
+    )
+
+    identity = (
+        f"{namespace}/{pod_name}" if duplicate_name else pod_name
+    )
+
+    if pod_phase == "Running" and negative_claim:
+        issues.append(
+            f"AI may have incorrectly described Running pod "
+            f"'{identity}' as stopped, down, crashed or not running. "
+            f"Source phase is Running."
+        )
+        return
+
+    if pod_phase in ("Running", "Succeeded", "Failed"):
+        verified_pods.append(identity)
+
+    for container in pod.get("containers", []):
+        container_name = container.get("name", "")
+        if not container_name:
+            continue
+
+        matching_sentences = [
+            sentence for sentence in sentences
+            if container_name.lower() in sentence
+        ]
+
+        if not matching_sentences:
+            continue
+
+        container_negative = any(
+            re.search(pattern, sentence)
+            for sentence in matching_sentences
+            for pattern in negative_patterns
+        )
+
+        if container.get("ready") is True and not container_negative:
+            verified_pods.append(
+                f"{identity}/{container_name}"
+            )
 
 def build_incident_correlations(context):
 
@@ -496,12 +483,13 @@ def build_incident_correlations(context):
     correlations = []
 
     log_records = {
-        (item.get("pod"), item.get("container")): item
+        (item.get("namespace"), item.get("pod"), item.get("container")): item
         for item in context.get("container_logs", [])
     }
 
     for signal_record in context.get("diagnostic_signals", []):
 
+        namespace = signal_record.get("namespace")
         pod_name = signal_record.get("pod")
         container_name = signal_record.get("container")
         previous_signals = signal_record.get("previous", {}).get("signals", [])
@@ -555,12 +543,15 @@ def build_incident_correlations(context):
             if index < len(previous_signals)
         ]
 
-        log_record = log_records.get((pod_name, container_name), {})
+        log_record = log_records.get(
+            (namespace, pod_name, container_name), {}
+        )
         pod_status = log_record.get("pod_status", {})
 
         correlations.append({
             "incident_type": "DATABASE_CONNECTION_FAILURE_WITH_APPLICATION_WORKER_FAILURE",
             "time_scope": "HISTORICAL_PREVIOUS_CONTAINER_LOGS",
+            "namespace": namespace,
             "pod": pod_name,
             "container": container_name,
             "current_pod_phase": pod_status.get("pod_phase"),
@@ -733,12 +724,20 @@ def build_source_verified_evidence(source_data, incident_correlations):
     rejected_candidates = []
 
     source_records = {
-        (entry.get("pod"), entry.get("container")): entry
+        (
+            entry.get("namespace") or source_data.get("namespace"),
+            entry.get("pod"),
+            entry.get("container")
+        ): entry
         for entry in source_data.get("container_logs", [])
     }
 
     for correlation in incident_correlations:
-        key = (correlation.get("pod"), correlation.get("container"))
+        key = (
+            correlation.get("namespace") or source_data.get("namespace"),
+            correlation.get("pod"),
+            correlation.get("container")
+        )
         source_entry = source_records.get(key)
 
         if not source_entry:
@@ -807,6 +806,9 @@ def save_live_report(
 
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
+    timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S-%f")
+    output_file = REPORT_DIR / f"{REPORT_PREFIX}-{timestamp}.json"
+
     report = {
 
         "report_type": "LIVE_KUBERNETES_AI_ANALYSIS",
@@ -839,7 +841,7 @@ def save_live_report(
         "ai_output_validation": output_validation
     }
 
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as file:
+    with open(output_file, "x", encoding="utf-8") as file:
 
         json.dump(
             report,
@@ -848,7 +850,7 @@ def save_live_report(
             ensure_ascii=False
         )
 
-    print(f"\nAI report saved: {OUTPUT_FILE}")
+    print(f"\nAI report saved: {output_file}")
 
 
 def main():

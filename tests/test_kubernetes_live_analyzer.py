@@ -101,3 +101,128 @@ def test_historical_termination_does_not_mean_pod_stopped(
     assert result["validation_status"] == "CHECK_PASSED"
     assert "shopnova-postgres-0" in result["verified_pods"]
     assert result["issues"] == []
+
+
+def test_duplicate_pod_name_without_namespace_requires_review():
+    """An unqualified claim must not be assigned to duplicate pod names."""
+
+    context = {
+        "pods": [
+            {
+                "namespace": "namespace-a",
+                "name": "shared-pod",
+                "phase": "Running",
+                "containers": [
+                    {"name": "app", "ready": True, "restart_count": 0}
+                ],
+            },
+            {
+                "namespace": "namespace-b",
+                "name": "shared-pod",
+                "phase": "Running",
+                "containers": [
+                    {"name": "app", "ready": True, "restart_count": 0}
+                ],
+            },
+        ]
+    }
+
+    analysis = {
+        "problem_summary": "The pod shared-pod and its app container are currently running.",
+        "root_cause": "No failure identified.",
+        "evidence": [],
+        "troubleshooting_steps": [],
+        "preventive_actions": [],
+    }
+
+    result = validate_pod_status_claims(analysis, context)
+
+    assert result["validation_status"] == "REVIEW_REQUIRED"
+    assert result["verified_pods"] == []
+    assert any("multiple namespaces" in issue for issue in result["issues"])
+
+
+def test_duplicate_pod_names_with_namespaces_are_verified():
+    """Correct claims identifying both namespaces should pass."""
+
+    context = {
+        "pods": [
+            {
+                "namespace": "namespace-a",
+                "name": "shared-pod",
+                "phase": "Running",
+                "containers": [
+                    {"name": "app", "ready": True, "restart_count": 0}
+                ],
+            },
+            {
+                "namespace": "namespace-b",
+                "name": "shared-pod",
+                "phase": "Running",
+                "containers": [
+                    {"name": "app", "ready": True, "restart_count": 0}
+                ],
+            },
+        ]
+    }
+
+    analysis = {
+        "problem_summary": (
+            "In namespace-a, shared-pod and its app container are currently running. "
+            "In namespace-b, shared-pod and its app container are currently running."
+        ),
+        "root_cause": "No current pod failure identified.",
+        "evidence": [],
+        "troubleshooting_steps": [],
+        "preventive_actions": [],
+    }
+
+    result = validate_pod_status_claims(analysis, context)
+
+    assert result["validation_status"] == "CHECK_PASSED"
+    assert "namespace-a/shared-pod" in result["verified_pods"]
+    assert "namespace-b/shared-pod" in result["verified_pods"]
+    assert "namespace-a/shared-pod/app" in result["verified_pods"]
+    assert "namespace-b/shared-pod/app" in result["verified_pods"]
+    assert result["issues"] == []
+
+
+def test_duplicate_pod_name_with_incorrect_namespace_status_requires_review():
+    """A false status claim for one namespace must require review."""
+
+    context = {
+        "pods": [
+            {
+                "namespace": "namespace-a",
+                "name": "shared-pod",
+                "phase": "Running",
+                "containers": [
+                    {"name": "app", "ready": True, "restart_count": 0}
+                ],
+            },
+            {
+                "namespace": "namespace-b",
+                "name": "shared-pod",
+                "phase": "Running",
+                "containers": [
+                    {"name": "app", "ready": True, "restart_count": 0}
+                ],
+            },
+        ]
+    }
+
+    analysis = {
+        "problem_summary": (
+            "In namespace-a, shared-pod is not running. "
+            "In namespace-b, shared-pod and its app container are currently running."
+        ),
+        "root_cause": "Pod status needs investigation.",
+        "evidence": [],
+        "troubleshooting_steps": [],
+        "preventive_actions": [],
+    }
+
+    result = validate_pod_status_claims(analysis, context)
+
+    assert result["validation_status"] == "REVIEW_REQUIRED"
+    assert any("namespace-a/shared-pod" in issue for issue in result["issues"])
