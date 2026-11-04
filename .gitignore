@@ -40,3 +40,10 @@ kubernetes_live_analyzer.py.bak-*
 
 # Live receiver environment secrets
 live_receiver/.env
+
+# Live forwarder local backups
+/live_forwarder.py.*
+/tests/test_live_forwarder.py.*
+
+# Analyzer worker runtime state
+/live_receiver/worker-state/

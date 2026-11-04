@@ -626,6 +626,23 @@ Do not assign CRITICAL merely because a container previously restarted.
 If the current container is running but previous logs show failures,
 describe the historical failure and current state separately.
 
+EVIDENCE GENERATION RULES:
+
+26. The evidence array must contain only incident-related facts that can
+    be verified against the original source data.
+27. Prefer exact original container log excerpts and verifiable Kubernetes
+    structured facts.
+28. Do not repeat diagnostic_signals as separate evidence when they merely
+    duplicate an original container log.
+29. Do not include statements about empty pods/events arrays or missing
+    pod-status fields in the evidence array.
+30. Describe missing Kubernetes information and source-data limitations
+    in problem_summary or root_cause, where relevant.
+31. Never convert missing information into a confirmed failure.
+32. Preserve the original log text. Do not invent or modify log excerpts.
+33. If the supplied data contains only synthetic or test logs, explicitly
+    state that no real production incident is established.
+
 Evidence must contain at least one evidence-based item.
 Severity must be LOW, MEDIUM, HIGH or CRITICAL.
 """

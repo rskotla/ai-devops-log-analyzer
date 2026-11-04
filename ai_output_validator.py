@@ -160,11 +160,21 @@ def validate_ai_output(analysis, context, severity_validation):
     correlations = context.get("incident_correlations", [])
     correlation = correlations[0] if correlations else None
 
-    _record(checks, issues, "problem_summary_present", bool(summary.strip()),
-            "Problem summary is missing or empty.")
-    _record(checks, issues, "root_cause_present",
-            bool(root_cause.strip()) and root_cause.strip().lower() != "none",
-            "Root cause is not established or the explanation is missing.")
+    summary_present = bool(summary.strip())
+    _record(
+        checks, issues, "problem_summary_present", summary_present,
+        "Problem summary is present." if summary_present
+        else "Problem summary is missing or empty."
+    )
+
+    root_cause_present = (
+        bool(root_cause.strip()) and root_cause.strip().lower() != "none"
+    )
+    _record(
+        checks, issues, "root_cause_present", root_cause_present,
+        "Root cause explanation is present." if root_cause_present
+        else "Root cause is not established or the explanation is missing."
+    )
 
     if correlation:
         incident_pod = correlation.get("pod")
@@ -255,7 +265,11 @@ def validate_ai_output(analysis, context, severity_validation):
     review_recommendations = [
         line.strip() for line in recommendations.splitlines()
         if line.strip()
-        and ACTION_PATTERN.search(line)
+        # "Restart history" describes historical information, not a
+        # runtime restart action. Remove that noun phrase before scanning.
+        and ACTION_PATTERN.search(
+            re.sub(r"\brestart\s+history\b", "", line, flags=re.IGNORECASE)
+        )
         and not _is_historical_status_investigation(line)
         and not _is_read_only_recommendation(line)
     ]

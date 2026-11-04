@@ -258,7 +258,7 @@ def validate_evidence(analysis, source_data):
 
         # Previous-log claims must be verified only against container logs.
         if re.search(
-            r"(?:(?:previous|current)\s+)?(?:container\s+)?logs?\s+(?:show|shows|contain|contains)",
+            r"(?:(?:previous|current)\s+)?(?:container[\s_]+)?logs?(?:\s+entry\b.*?)?\s+(?:show|shows|contain|contains)\s*:?",
             normalized_item,
             re.IGNORECASE
         ):
@@ -305,7 +305,7 @@ def validate_evidence(analysis, source_data):
 def _verify_compound_log_claims(evidence, source_data):
     """Verify previous-log claims against the correct container log record."""
     log_match = re.search(
-        r'(?:(previous|current)\s+)?(?:container\s+)?logs?\s+(?:show|shows|contain|contains)\s+(.+)$',
+        r'(?:(previous|current)\s+)?(?:container[\s_]+)?logs?(?:\s+entry\b.*?)?\s+(?:show|shows|contain|contains)\s*:?\s*(.+)$',
         evidence,
         re.IGNORECASE
     )
@@ -379,9 +379,43 @@ def _verify_compound_log_claims(evidence, source_data):
         ]
 
     elif not pods and len(records) == 1:
-        # Legacy reports without pod metadata are safe only when
-        # exactly one container-log record exists.
+        # Preserve the legacy fallback for a single unambiguous record.
         matching_records = records
+
+    elif not pods:
+        # Logs-only batches may contain multiple records. Require explicit
+        # namespace, pod and container identity before selecting a record.
+        candidates = []
+
+        def mentioned(value):
+            if not isinstance(value, str) or not value:
+                return False
+
+            pattern = (
+                r"(?<![a-z0-9_.-])"
+                + re.escape(value.lower())
+                + r"(?![a-z0-9_.-])"
+            )
+            return re.search(pattern, evidence.lower()) is not None
+
+        for record in records:
+            pod_name = record.get("pod")
+            container_name = record.get("container")
+            namespace = (
+                record.get("namespace")
+                or source_data.get("namespace")
+            )
+
+            if not mentioned(pod_name) or not mentioned(container_name):
+                continue
+
+            # Namespaced records require the namespace to be stated too.
+            if not namespace or not mentioned(namespace):
+                continue
+
+            candidates.append(record)
+
+        matching_records = candidates if len(candidates) == 1 else []
 
     else:
         return False

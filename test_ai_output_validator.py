@@ -172,3 +172,54 @@ def test_log_retention_recommendation_passes():
         context(), severity()
     )
     assert check(result, "recommendation_safety")["status"] == "PASS"
+
+
+def test_presence_check_details_are_accurate():
+    result = validate_ai_output(analysis(), context(), severity())
+
+    assert check(result, "problem_summary_present")["status"] == "PASS"
+    assert check(result, "problem_summary_present")["detail"] == "Problem summary is present."
+
+    assert check(result, "root_cause_present")["status"] == "PASS"
+    assert check(result, "root_cause_present")["detail"] == "Root cause explanation is present."
+
+
+def test_missing_summary_and_root_cause_details_are_accurate():
+    result = validate_ai_output(
+        analysis(problem_summary="", root_cause=""),
+        context(),
+        severity(),
+    )
+
+    assert check(result, "problem_summary_present")["status"] == "REVIEW_REQUIRED"
+    assert check(result, "problem_summary_present")["detail"] == "Problem summary is missing or empty."
+
+    assert check(result, "root_cause_present")["status"] == "REVIEW_REQUIRED"
+    assert check(result, "root_cause_present")["detail"] == (
+        "Root cause is not established or the explanation is missing."
+    )
+
+
+def test_restart_history_maintenance_recommendation_passes():
+    result = validate_ai_output(
+        analysis(preventive_actions=[
+            "Maintain correlation data for real application errors and restart history to support future root-cause analysis."
+        ]),
+        context(),
+        severity(),
+    )
+
+    assert check(result, "recommendation_safety")["status"] == "PASS"
+    assert result["unsafe_recommendations"] == []
+
+
+def test_restart_action_is_still_flagged_with_restart_history_context():
+    result = validate_ai_output(
+        analysis(preventive_actions=[
+            "Maintain restart history and restart the PostgreSQL service."
+        ]),
+        context(),
+        severity(),
+    )
+
+    assert check(result, "recommendation_safety")["status"] == "REVIEW_REQUIRED"

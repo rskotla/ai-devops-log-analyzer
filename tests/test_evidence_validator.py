@@ -413,3 +413,147 @@ def test_container_log_evidence_found_only_in_event_requires_review():
 
     assert result["grounding_status"] == "REVIEW_REQUIRED"
     assert result["unsupported_evidence"]
+
+
+def test_logs_only_multiple_containers_with_explicit_identity_pass():
+    source_data = {
+        "pods": {"pods": []},
+        "container_logs": [
+            {
+                "namespace": "namespace-a",
+                "pod": "shared-pod",
+                "container": "app",
+                "current": {
+                    "logs": "Database connection reset by peer after timeout"
+                }
+            },
+            {
+                "namespace": "namespace-b",
+                "pod": "shared-pod",
+                "container": "app",
+                "current": {
+                    "logs": "Application started successfully and listening"
+                }
+            }
+        ]
+    }
+
+    analysis = {
+        "evidence": [
+            'In namespace-a, shared-pod container app current logs show '
+            '"Database connection reset by peer after timeout".'
+        ]
+    }
+
+    result = validate_evidence(analysis, source_data)
+
+    assert result["grounding_status"] == "PASS"
+    assert result["unsupported_evidence"] == []
+
+
+def test_logs_only_multiple_containers_wrong_namespace_requires_review():
+    source_data = {
+        "pods": {"pods": []},
+        "container_logs": [
+            {
+                "namespace": "namespace-a",
+                "pod": "shared-pod",
+                "container": "app",
+                "current": {
+                    "logs": "Database connection reset by peer after timeout"
+                }
+            },
+            {
+                "namespace": "namespace-b",
+                "pod": "shared-pod",
+                "container": "app",
+                "current": {
+                    "logs": "Application started successfully and listening"
+                }
+            }
+        ]
+    }
+
+    analysis = {
+        "evidence": [
+            'In namespace-b, shared-pod container app current logs show '
+            '"Database connection reset by peer after timeout".'
+        ]
+    }
+
+    result = validate_evidence(analysis, source_data)
+
+    assert result["grounding_status"] == "REVIEW_REQUIRED"
+    assert result["unsupported_evidence"]
+
+
+def test_logs_only_ambiguous_identity_requires_review():
+    source_data = {
+        "pods": {"pods": []},
+        "container_logs": [
+            {
+                "namespace": "namespace-a",
+                "pod": "shared-pod",
+                "container": "app",
+                "current": {
+                    "logs": "Database connection reset by peer after timeout"
+                }
+            },
+            {
+                "namespace": "namespace-b",
+                "pod": "shared-pod",
+                "container": "app",
+                "current": {
+                    "logs": "Database connection reset by peer after timeout"
+                }
+            }
+        ]
+    }
+
+    analysis = {
+        "evidence": [
+            'shared-pod container app current logs show '
+            '"Database connection reset by peer after timeout".'
+        ]
+    }
+
+    result = validate_evidence(analysis, source_data)
+
+    assert result["grounding_status"] == "REVIEW_REQUIRED"
+    assert result["unsupported_evidence"]
+
+
+def test_logs_only_wrong_container_identity_requires_review():
+    source_data = {
+        "pods": {"pods": []},
+        "container_logs": [
+            {
+                "namespace": "namespace-a",
+                "pod": "shared-pod",
+                "container": "app",
+                "current": {
+                    "logs": "Database connection reset by peer after timeout"
+                }
+            },
+            {
+                "namespace": "namespace-a",
+                "pod": "shared-pod",
+                "container": "sidecar",
+                "current": {
+                    "logs": "Sidecar proxy started successfully"
+                }
+            }
+        ]
+    }
+
+    analysis = {
+        "evidence": [
+            'In namespace-a, shared-pod container sidecar current logs show '
+            '"Database connection reset by peer after timeout".'
+        ]
+    }
+
+    result = validate_evidence(analysis, source_data)
+
+    assert result["grounding_status"] == "REVIEW_REQUIRED"
+    assert result["unsupported_evidence"]
