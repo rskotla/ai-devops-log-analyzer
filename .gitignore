@@ -28,3 +28,15 @@ reports/
 # OS files
 .DS_Store
 Thumbs.db
+
+# AI DevOps Live Receiver - local secrets and runtime data
+live_receiver/certs/
+live_receiver/incoming/
+live_receiver/receiver.py.*-backup
+
+# Local backup files
+/backups/
+kubernetes_live_analyzer.py.bak-*
+
+# Live receiver environment secrets
+live_receiver/.env
